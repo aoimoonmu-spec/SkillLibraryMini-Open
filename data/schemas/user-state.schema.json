@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Skill Library Mini user state",
+  "type": "object",
+  "required": ["version", "theme", "view", "favorites", "recent", "overrides", "tags"],
+  "properties": {
+    "version": { "type": "integer", "const": 1 },
+    "theme": { "enum": ["system", "light", "dark"] },
+    "view": { "enum": ["grid", "list"] },
+    "favorites": { "type": "array", "items": { "type": "string" } },
+    "recent": { "type": "array", "items": { "type": "string" } },
+    "overrides": { "type": "object" },
+    "tags": { "type": "object" }
+  },
+  "additionalProperties": false
+}

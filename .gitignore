@@ -1,0 +1,15 @@
+# Public-release data rules
+/data/*
+!/data/defaults/
+!/data/defaults/**
+!/data/examples/
+!/data/examples/**
+!/data/schemas/
+!/data/schemas/**
+
+# Generated user and build files
+desktop/electron/node_modules/
+desktop/electron/runtime/
+electron-prototype/
+release/
+dist/

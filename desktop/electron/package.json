@@ -1,0 +1,40 @@
+{
+  "name": "skill-library-mini-desktop",
+  "private": true,
+  "version": "0.9.0",
+  "description": "Local AI Agent Skill Library",
+  "main": "main.cjs",
+  "scripts": {
+    "prepare-runtime": "node scripts/prepare-runtime.mjs",
+    "start": "npm run prepare-runtime && electron .",
+    "package:win": "npm run prepare-runtime && electron-builder --win nsis dir",
+    "portable:zip": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/package-portable.ps1"
+  },
+  "devDependencies": {
+    "electron": "39.8.10",
+    "electron-builder": "26.8.1"
+  },
+  "build": {
+    "appId": "com.skilllibrarymini.app",
+    "productName": "Skill Library Mini",
+    "artifactName": "SkillLibraryMini-Windows-Setup-x64.${ext}",
+    "directories": {
+      "output": "../../release/windows"
+    },
+    "files": ["main.cjs", "preload.cjs", "package.json"],
+    "extraResources": [{ "from": "runtime", "to": "skill-library" }],
+    "win": {
+      "target": ["nsis", "dir"],
+      "icon": "../../app/assets/SkillLibraryMini.ico",
+      "requestedExecutionLevel": "asInvoker"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Skill Library Mini",
+      "uninstallDisplayName": "Skill Library Mini"
+    }
+  }
+}

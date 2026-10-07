@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Skill Library Mini skill index",
+  "type": "object",
+  "required": ["schema_version", "generated_utc", "scan_roots", "unique_skill_count", "installed_path_count", "last_refresh", "skills"],
+  "properties": {
+    "schema_version": { "const": 2 },
+    "generated_utc": { "type": "string" },
+    "scan_roots": { "type": "array" },
+    "unique_skill_count": { "type": "integer", "minimum": 0 },
+    "installed_path_count": { "type": "integer", "minimum": 0 },
+    "last_refresh": { "type": "object" },
+    "skills": { "type": "array" }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "schema_version": 2,
+  "generated_utc": "1970-01-01T00:00:00.000Z",
+  "scan_roots": [],
+  "unique_skill_count": 0,
+  "installed_path_count": 0,
+  "last_refresh": { "mode": "incremental", "added": 0, "reparsed": 0, "unchanged": 0, "removed": 0 },
+  "skills": []
+}

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Skill Library Mini</title>
+    <link rel="icon" type="image/png" href="/assets/skill-library-icon.png">
+    <link rel="manifest" href="/manifest.webmanifest">
+    <link rel="stylesheet" href="/styles.css">
+    <link rel="stylesheet" href="/overrides.css">
+  </head>
+  <body>
+    <main id="app" aria-live="polite">
+      <aside class="sidebar">
+        <div class="brand"><span class="brand-mark"><img src="/assets/skill-library-icon.png" alt=""></span><span>Skill Library</span><small>MINI</small></div>
+        <nav id="nav" aria-label="Skill 分类"></nav>
+        <div class="sidebar-footer"><span id="sync-state">本地索引已就绪</span></div>
+      </aside>
+      <section class="workspace">
+        <header class="topbar">
+          <div><p class="eyebrow">LOCAL SKILL ATLAS</p><h1 id="page-title">全部 Skill</h1><p id="count-label" class="muted"></p></div>
+          <div class="top-actions">
+            <label class="search"><span>⌕</span><input id="search" autocomplete="off" placeholder="搜索名称、中文介绍、标签…"></label>
+            <button id="smart-button" class="primary">找 Skill</button>
+            <button id="view-button" class="icon-button" type="button" title="切换为列表视图" aria-label="切换为列表视图" aria-pressed="false">▦</button>
+            <select id="theme" aria-label="主题"><option value="system">跟随系统</option><option value="light">浅色</option><option value="dark">深色</option></select>
+            <button id="refresh-button" class="icon-button" title="刷新索引">↻</button>
+            <button id="settings-button" class="icon-button" title="设置">⚙</button>
+          </div>
+        </header>
+        <section id="filter-line" class="filter-line"></section>
+        <section id="analysis-notice" class="filter-line" hidden></section>
+        <section id="grid" class="skill-grid" aria-label="Skill 列表"></section>
+        <section id="history-records" class="history-records" hidden aria-label="历史关系记录"></section>
+      </section>
+    </main>
+    <dialog id="detail-dialog" class="dialog detail-dialog"><article id="detail-content"></article></dialog>
+    <dialog id="pack-dialog" class="dialog detail-dialog"><article id="pack-content"></article></dialog>
+    <dialog id="smart-dialog" class="dialog"><article class="dialog-card finder-dialog"><button class="close" data-close aria-label="关闭找 Skill">×</button><p class="eyebrow">SKILL FINDER</p><h2>找 Skill</h2><div class="finder-tabs" role="tablist" aria-label="找 Skill 方式"><button type="button" class="active" data-finder-mode="quick" role="tab" aria-selected="true">快速筛选</button><button type="button" data-finder-mode="codex" role="tab" aria-selected="false">让 Codex 推荐</button></div><section class="finder-panel" data-finder-panel="quick"><p class="muted">本地快速筛出相关 Skill 与 Pack，不使用 AI。</p><textarea id="quick-filter-input" placeholder="例如：游戏、React Native、公众号写作"></textarea><button id="quick-filter-button" class="primary full">开始筛选</button><div id="quick-filter-results" class="finder-results"></div></section><section class="finder-panel" data-finder-panel="codex" hidden><p class="muted">让 Codex 理解完整任务，并从当前资料库候选中完成最终推荐；不会自动执行或安装 Skill。</p><textarea id="codex-task-input" placeholder="例如：我想做一个小游戏，想快速做出可玩的原型，并把 UI 和手感一起做好。"></textarea><button id="build-codex-request" class="primary full">生成 Codex 推荐指令</button><div id="codex-request-wrap" hidden><p class="finder-preview-label">推荐请求预览</p><textarea id="codex-request-preview" readonly></textarea><button id="copy-codex-request" class="secondary full">复制指令</button></div></section></article></dialog>
+    <dialog id="settings-dialog" class="dialog"><article class="dialog-card"><button class="close" data-close>×</button><p class="eyebrow">LOCAL DATA</p><h2>备份与恢复</h2><p class="muted">只导出和导入资料库自己的收藏、分类、主题、最近查看和中文介绍缓存。</p><div class="settings-row"><button id="export-button" class="secondary">导出备份</button><label class="secondary file-label">导入备份<input id="import-input" type="file" accept="application/json" hidden></label></div></article></dialog>
+    <template id="empty-template"><div class="empty"><strong>没有找到匹配的 Skill</strong><span>试试调整关键词或切换分类。</span></div></template>
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
