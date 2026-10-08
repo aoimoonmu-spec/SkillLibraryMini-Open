@@ -1,6 +1,6 @@
 import { createServer } from 'node:http';
 import { copyFile, readFile, writeFile, mkdir, stat } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, watch } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import os from 'node:os';
@@ -14,6 +14,8 @@ const root = existsSync(path.join(serverRoot, '..', 'app')) ? path.resolve(serve
 const isMainModule = process.argv[1] && path.resolve(process.argv[1]) === serverFile;
 const appRoot = path.join(root, 'app');
 const codexHome = process.env.SKILL_LIBRARY_CODEX_HOME || path.join(os.homedir(), '.codex');
+const agentsHome = process.env.SKILL_LIBRARY_AGENTS_HOME || path.join(os.homedir(), '.agents');
+const projectRoot = path.resolve(process.env.SKILL_LIBRARY_PROJECT_ROOT || root);
 const legacyDataRoot = process.env.SKILL_LIBRARY_DATA_ROOT;
 const programDataRoot = path.resolve(process.env.SKILL_LIBRARY_PROGRAM_DATA_ROOT || legacyDataRoot || path.join(root, 'data'));
 function defaultUserDataRoot() {
@@ -40,6 +42,14 @@ const launchDesktop = process.argv.includes('--open');
 const buildCacheOnly = process.argv.includes('--build-cache');
 let lastHeartbeat = Date.now();
 let heartbeatMonitor;
+let libraryVersion = 1;
+let lastLibrarySync = null;
+let refreshInFlight = null;
+let refreshDebounce;
+let watcherRootMonitor;
+const skillWatchers = new Map();
+const watcherDebounceMs = Math.max(500, Number(process.env.SKILL_LIBRARY_WATCH_DEBOUNCE_MS || 900));
+const watcherRootPollMs = Math.max(2_000, Number(process.env.SKILL_LIBRARY_WATCH_ROOT_POLL_MS || 10_000));
 
 const categories = [
   ['visual', '图片 / 视觉设计'], ['media', '视频 / 音频'], ['web', '网页 / APP 开发'],
@@ -61,6 +71,15 @@ const categoryMatchers = [
   ['research', /\b(research|learn|reading|study)\b|调研|学习|阅读|研究/],
   ['agent', /\b(agent|mcp|codex|llm)\b|智能体|技能路由|模型工具/],
 ];
+
+function skillScanRoots() {
+  return [...new Set([
+    path.resolve(codexHome, 'skills'),
+    path.resolve(agentsHome, 'skills'),
+    path.resolve(projectRoot, '.codex', 'skills'),
+    path.resolve(projectRoot, '.agents', 'skills'),
+  ])];
+}
 
 const defaultState = () => ({
   version: 1, theme: 'system', view: 'grid', favorites: [], recent: [],
@@ -110,6 +129,10 @@ function activePaths(skill) {
   return (skill.paths || []).map((entry) => entry.skill_md).filter((file) => typeof file === 'string' && existsSync(file));
 }
 
+function activePathInfo(skill) {
+  return (skill.paths || []).find((entry) => typeof entry.skill_md === 'string' && existsSync(entry.skill_md)) || null;
+}
+
 function fingerprint(skill, raw) {
   return createHash('sha256').update(`${skill.id}\0${raw}`).digest('hex').slice(0, 20);
 }
@@ -118,12 +141,20 @@ async function analysisQueue(index) {
   await ensureDataFiles();
   const metadata = await readJson(metadataPath, { version: 1, entries: {} });
   const previous = await readJson(analysisQueuePath, { version: 1, items: [] });
+  const previousBySkill = new Map((previous.items || []).map((item) => [item.skillId, item]));
   const items = [];
   for (const skill of index.skills) {
-    const file = activePaths(skill)[0]; const raw = file ? await readFile(file, 'utf8') : '';
-    const contentHash = fingerprint(skill, raw); const entry = metadata.entries?.[skill.id];
+    const pathInfo = activePathInfo(skill); const file = pathInfo?.skill_md || null;
+    // Older indexes do not have analysis_hash. Read only those legacy files once;
+    // normal queue checks reuse the hash produced by the incremental indexer.
+    const contentHash = pathInfo?.analysis_hash || (file ? fingerprint(skill, await readFile(file, 'utf8')) : fingerprint(skill, ''));
+    const entry = metadata.entries?.[skill.id];
     const reason = !entry ? 'new' : entry.lastAnalyzedHash !== contentHash ? 'changed' : null;
-    if (reason) items.push({ skillId: skill.id, name: skill.name, skillMdPath: file || null, contentHash, reason, queuedAt: new Date().toISOString() });
+    if (reason) {
+      const prior = previousBySkill.get(skill.id);
+      const queuedAt = prior?.contentHash === contentHash && prior?.reason === reason ? prior.queuedAt : new Date().toISOString();
+      items.push({ skillId: skill.id, name: skill.name, skillMdPath: file || null, contentHash, reason, queuedAt });
+    }
   }
   const queue = { version: 1, items };
   if (JSON.stringify(previous.items) !== JSON.stringify(items)) await writeJson(analysisQueuePath, queue);
@@ -393,11 +424,84 @@ function runCommand(command, args, options = {}) {
 }
 
 function runUpdater() {
-  if (existsSync(nodeUpdaterPath)) return runCommand(process.execPath, [nodeUpdaterPath, '--project-root', root], { windowsHide: true, cwd: root });
+  const bundledUpdaterPath = path.join(root, 'scripts', 'Update-SkillIndex.mjs');
+  const updater = [nodeUpdaterPath, bundledUpdaterPath].find((file) => existsSync(file));
+  if (updater) return runCommand(process.execPath, [updater, '--project-root', projectRoot], { windowsHide: true, cwd: root });
   if (process.platform === 'win32' && existsSync(legacyWindowsUpdaterPath)) {
     return runCommand('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', legacyWindowsUpdaterPath], { windowsHide: true });
   }
   return Promise.reject(new Error('未找到跨平台索引刷新器。请先提供 Update-SkillIndex.mjs。'));
+}
+
+function updaterSummary(output) {
+  try { return JSON.parse(output); } catch { return { added: 0, reparsed: 0, removed: 0, unchanged: 0 }; }
+}
+
+async function refreshLibrary(reason = 'manual') {
+  if (refreshInFlight) return refreshInFlight;
+  refreshInFlight = (async () => {
+    const output = await runUpdater();
+    const summary = updaterSummary(output);
+    const index = await getIndex();
+    const queue = await analysisQueue(index);
+    const changed = Number(summary.added || 0) + Number(summary.reparsed || 0) + Number(summary.removed || 0);
+    if (changed) libraryVersion += 1;
+    lastLibrarySync = { reason, changed, summary, queued: queue.items.length, at: new Date().toISOString() };
+    return { output, index, queue, ...lastLibrarySync, version: libraryVersion };
+  })().finally(() => { refreshInFlight = null; });
+  return refreshInFlight;
+}
+
+function scheduleLibraryRefresh(reason = 'filesystem') {
+  clearTimeout(refreshDebounce);
+  refreshDebounce = setTimeout(() => {
+    refreshLibrary(reason).catch((error) => console.error(`Skill Library automatic refresh failed: ${error.message}`));
+  }, watcherDebounceMs);
+  refreshDebounce.unref?.();
+}
+
+function watchSkillRoot(rootPath) {
+  const listener = () => scheduleLibraryRefresh('filesystem');
+  try {
+    return watch(rootPath, { recursive: true }, listener);
+  } catch {
+    // The required platforms support recursive watches; a non-recursive
+    // fallback still catches root-level creation and is reconciled by polling.
+    return watch(rootPath, listener);
+  }
+}
+
+function ensureSkillWatchers() {
+  const roots = new Set(skillScanRoots());
+  for (const [rootPath, watcher] of skillWatchers) {
+    if (roots.has(rootPath) && existsSync(rootPath)) continue;
+    watcher.close(); skillWatchers.delete(rootPath);
+  }
+  for (const rootPath of roots) {
+    if (!existsSync(rootPath) || skillWatchers.has(rootPath)) continue;
+    try {
+      const watcher = watchSkillRoot(rootPath);
+      watcher.on('error', () => { watcher.close(); skillWatchers.delete(rootPath); });
+      watcher.unref?.();
+      skillWatchers.set(rootPath, watcher);
+    } catch {
+      // A missing or transient directory is retried by the lightweight root poll.
+    }
+  }
+}
+
+function startSkillWatchers() {
+  ensureSkillWatchers();
+  if (!watcherRootMonitor) {
+    watcherRootMonitor = setInterval(ensureSkillWatchers, watcherRootPollMs);
+    watcherRootMonitor.unref?.();
+  }
+}
+
+function stopSkillWatchers() {
+  clearTimeout(refreshDebounce); clearInterval(watcherRootMonitor); watcherRootMonitor = null;
+  for (const watcher of skillWatchers.values()) watcher.close();
+  skillWatchers.clear();
 }
 
 const mime = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.webmanifest': 'application/manifest+json; charset=utf-8' };
@@ -412,11 +516,12 @@ async function serveStatic(res, urlPath) {
 const server = createServer(async (req, res) => {
   try {
     const url = new URL(req.url || '/', `http://${req.headers.host || '127.0.0.1'}`);
-    if (req.method === 'GET' && url.pathname === '/api/health') return json(res, 200, { ok: true });
+    if (req.method === 'GET' && url.pathname === '/api/health') return json(res, 200, { ok: true, libraryVersion, lastSync: lastLibrarySync });
+    if (req.method === 'GET' && url.pathname === '/api/version') return json(res, 200, { version: libraryVersion, lastSync: lastLibrarySync, refreshing: Boolean(refreshInFlight) });
     if (req.method === 'GET' && url.pathname === '/api/skills') {
       const { index, state, skills, packContext, sourceContext, queue } = await getPublicSkills();
       const sourceRecords = [...sourceContext.bySkill.values()];
-      return json(res, 200, { skills, packs: packContext.packs.map((pack) => publicPack(pack, skills)), state, analysisQueue: queue, counts: { unique: index.unique_skill_count, paths: index.installed_path_count, githubConfirmed: sourceRecords.filter((record) => record.repoKey).length }, categories });
+      return json(res, 200, { skills, packs: packContext.packs.map((pack) => publicPack(pack, skills)), state, analysisQueue: queue, libraryVersion, lastSync: lastLibrarySync, counts: { unique: index.unique_skill_count, paths: index.installed_path_count, githubConfirmed: sourceRecords.filter((record) => record.repoKey).length }, categories });
     }
     if (req.method === 'GET' && url.pathname === '/api/packs') { const { skills, packContext } = await getPublicSkills(); return json(res, 200, { packs: packContext.packs.map((pack) => publicPack(pack, skills)) }); }
     if (req.method === 'GET' && url.pathname === '/api/detail') {
@@ -427,7 +532,7 @@ const server = createServer(async (req, res) => {
     if (req.method === 'POST' && url.pathname === '/api/pack-member') return json(res, 200, await updatePackMember(await requestBody(req)));
     if (req.method === 'POST' && url.pathname === '/api/pack-entry') return json(res, 200, await updatePackEntry(await requestBody(req)));
     if (req.method === 'POST' && url.pathname === '/api/heartbeat') { lastHeartbeat = Date.now(); return json(res, 200, { ok: true }); }
-    if (req.method === 'POST' && url.pathname === '/api/refresh') { const output = await runUpdater(); const { index } = await getPublicSkills(); return json(res, 200, { output, unique: index.unique_skill_count, paths: index.installed_path_count }); }
+    if (req.method === 'POST' && url.pathname === '/api/refresh') { const result = await refreshLibrary('manual'); return json(res, 200, { ...result.summary, unique: result.index.unique_skill_count, paths: result.index.installed_path_count, version: result.version }); }
     if (req.method === 'GET' && url.pathname === '/api/analysis-queue') { const index = await getIndex(); return json(res, 200, await analysisQueue(index)); }
     if (req.method === 'GET' && url.pathname === '/api/backup') { const [state, cache, packOverrides] = await Promise.all([getState(), readJson(introCachePath, { version: 1, entries: {} }), readJson(packOverridesPath, defaultPackOverrides())]); return json(res, 200, { format: 1, exportedAt: new Date().toISOString(), state, introCache: cache, packOverrides }); }
     if (req.method === 'POST' && url.pathname === '/api/backup') {
@@ -442,11 +547,25 @@ const server = createServer(async (req, res) => {
   } catch (error) { return json(res, 500, { error: error instanceof Error ? error.message : '未知错误。' }); }
 });
 
+server.on('close', () => {
+  clearInterval(heartbeatMonitor); heartbeatMonitor = null;
+  stopSkillWatchers();
+});
+
 export function startServer() {
   return new Promise((resolve, reject) => {
     if (server.listening) return resolve(`http://127.0.0.1:${server.address().port}`);
     server.once('error', reject);
-    ensureDataFiles().then(() => server.listen(port, '127.0.0.1'), reject);
+    ensureDataFiles().then(async () => {
+      try {
+        await refreshLibrary('startup');
+      } catch (error) {
+        if (!existsSync(indexPath)) throw error;
+        console.error(`Skill Library startup scan failed; using the last valid index: ${error.message}`);
+      }
+      startSkillWatchers();
+      server.listen(port, '127.0.0.1');
+    }).catch(reject);
     server.once('listening', () => {
       const address = `http://127.0.0.1:${server.address().port}`;
       server.removeListener('error', reject);
@@ -454,6 +573,11 @@ export function startServer() {
       resolve(address);
     });
   });
+}
+
+export function stopServer() {
+  if (!server.listening) { stopSkillWatchers(); return Promise.resolve(); }
+  return new Promise((resolve) => server.close(resolve));
 }
 
 export function openBrowser(address) {

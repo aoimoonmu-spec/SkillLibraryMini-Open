@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 const defaultProjectRoot = process.cwd();
@@ -28,9 +29,11 @@ function printHelp() {
 
 function defaultRoots(projectRoot) {
   const home = os.homedir();
+  const codexHome = process.env.SKILL_LIBRARY_CODEX_HOME || path.join(home, '.codex');
+  const agentsHome = process.env.SKILL_LIBRARY_AGENTS_HOME || path.join(home, '.agents');
   return [
-    { kind: 'codex-global', path: path.join(home, '.codex', 'skills') },
-    { kind: 'agents-global', path: path.join(home, '.agents', 'skills') },
+    { kind: 'codex-global', path: path.join(codexHome, 'skills') },
+    { kind: 'agents-global', path: path.join(agentsHome, 'skills') },
     { kind: 'project-agents', path: path.join(projectRoot, '.agents', 'skills') },
     { kind: 'project-codex', path: path.join(projectRoot, '.codex', 'skills') },
   ];
@@ -70,7 +73,12 @@ function metadataFromContent(file, content) {
     .replace(/[^\p{L}\p{N}_\- ]/gu, ' ')
     .split(/\s+/)
     .filter((term) => term.length >= 2))].slice(0, 32);
-  return { key: name.toLowerCase(), name, display_name: displayName, description, keywords, changed: true };
+  const key = name.toLowerCase();
+  return {
+    key, name, display_name: displayName, description, keywords, changed: true,
+    content_hash: createHash('sha256').update(content).digest('hex'),
+    analysis_hash: createHash('sha256').update(`${key}\0${content}`).digest('hex').slice(0, 20),
+  };
 }
 
 async function readJson(file, fallback) {
@@ -84,10 +92,12 @@ async function atomicWriteJson(file, value) {
   await rename(temp, file);
 }
 
-function unchangedMetadata(source) {
+function unchangedMetadata(source, pathInfo) {
   return {
     key: source.id, name: source.name, display_name: source.display_name,
     description: source.description, keywords: Array.isArray(source.keywords) ? source.keywords : [], changed: false,
+    content_hash: pathInfo?.content_hash || null,
+    analysis_hash: pathInfo?.analysis_hash || null,
   };
 }
 
@@ -112,8 +122,8 @@ async function updateIndex({ outputPath, roots, full }) {
       const prior = oldByPath.get(absolute);
       const previousModified = prior?.info?.modified_utc ? new Date(prior.info.modified_utc).toISOString() : null;
       let meta;
-      if (prior && previousModified === modifiedUtc) {
-        meta = unchangedMetadata(prior.skill);
+      if (prior && previousModified === modifiedUtc && prior.info?.content_hash && prior.info?.analysis_hash) {
+        meta = unchangedMetadata(prior.skill, prior.info);
         counters.unchanged += 1;
       } else {
         meta = metadataFromContent(file, await readFile(file, 'utf8'));
@@ -132,7 +142,7 @@ async function updateIndex({ outputPath, roots, full }) {
           dependencies_or_cost: previous && !meta.changed ? previous.dependencies_or_cost : '未确认',
         });
       }
-      groups.get(meta.key).paths.push({ root_kind: root.kind, skill_md: absolute, modified_utc: modifiedUtc });
+      groups.get(meta.key).paths.push({ root_kind: root.kind, skill_md: absolute, modified_utc: modifiedUtc, content_hash: meta.content_hash, analysis_hash: meta.analysis_hash });
     }
   }
   const removed = old ? [...oldByPath.keys()].filter((file) => !seenPaths.has(file)).length : 0;
@@ -155,7 +165,8 @@ const args = parseArgs(process.argv.slice(2));
 if (args.help) printHelp();
 else {
   const projectRoot = path.resolve(args.projectRoot || process.env.SKILL_LIBRARY_PROJECT_ROOT || defaultProjectRoot);
-  const outputPath = path.resolve(args.output || process.env.SKILL_INDEX_PATH || path.join(os.homedir(), '.codex', 'SKILL_INDEX.json'));
+  const codexHome = process.env.SKILL_LIBRARY_CODEX_HOME || path.join(os.homedir(), '.codex');
+  const outputPath = path.resolve(args.output || process.env.SKILL_INDEX_PATH || path.join(codexHome, 'SKILL_INDEX.json'));
   const roots = args.roots.length ? args.roots.map((root) => ({ ...root, path: path.resolve(root.path) })) : defaultRoots(projectRoot);
   console.log(JSON.stringify(await updateIndex({ outputPath, roots, full: Boolean(args.full) })));
 }
